@@ -1,0 +1,54 @@
+name: Build Signed Android APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 1. Скачивание исходников Mixxx
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 2. Установка зависимостей, компиляция и подпись APK
+        shell: bash
+        run: |
+          # Запускаем официальный скрипт подготовки Android-окружения
+          source ./tools/android_buildenv.sh setup
+          
+          # Генерируем криптографический ключ для подписи APK
+          keytool -genkey -noprompt \
+            -keystore mixxx.keystore \
+            -alias mixxx \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -keypass mylocalpassword \
+            -storepass mylocalpassword \
+            -dname "CN=MixxxAndroid"
+            
+          # Передаем параметры ключа в систему сборки Qt
+          export QT_ANDROID_KEYSTORE_ALIAS=mixxx
+          export QT_ANDROID_KEYSTORE_KEY_PASS=mylocalpassword
+          export QT_ANDROID_KEYSTORE_PATH=$(pwd)/mixxx.keystore
+          export QT_ANDROID_KEYSTORE_STORE_PASS=mylocalpassword
+          
+          # Автоматически ищем путь к скачанному тулчейну vcpkg
+          VCPKG_CMAKE=$(find $(pwd)/buildenv -name "vcpkg.cmake" | head -n 1)
+          echo "Используем тулчейн: $VCPKG_CMAKE"
+          
+          # Настраиваем CMake и запускаем сборку строго цели apk
+          mkdir build-android && cd build-android
+          cmake \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_CMAKE" \
+            -DCMAKE_SYSTEM_NAME=Android \
+            ..
+          cmake --build . --target apk --parallel $(nproc)
+
+      - name: 3. Сохранение готового APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mixxx-Android-Signed-APK
+          path: build-android/android-build/build/outputs/apk/**/*.apk
