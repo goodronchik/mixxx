@@ -12,13 +12,19 @@ jobs:
         with:
           submodules: recursive
 
-      - name: 2. Установка окружения, скачивание vcpkg и сборка APK
+      - name: 2. Кэширование зависимостей vcpkg
+        uses: actions/cache@v4
+        with:
+          path: buildenv
+          key: mixxx-android-deps-1c20f84a
+
+      - name: 3. Установка окружения и сборка APK
         shell: bash
         run: |
-          # 1. Запускаем скрипт настройки окружения (он задаст BUILDENV_URL и MIXXX_VCPKG_ROOT)
+          # 1. Запускаем скрипт настройки окружения
           source ./tools/android_buildenv.sh setup
           
-          # 2. Скачиваем и распаковываем готовый архив зависимостей Mixxx (Qt6 + vcpkg для Android)
+          # 2. Скачиваем архив зависимостей (если его еще нет в кэше)
           if [ ! -d "${MIXXX_VCPKG_ROOT}" ]; then
             echo "Скачиваем зависимости из: ${BUILDENV_URL}"
             mkdir -p "${BUILDENV_BASEPATH}"
@@ -44,18 +50,22 @@ jobs:
           export QT_ANDROID_KEYSTORE_PATH=$(pwd)/mixxx.keystore
           export QT_ANDROID_KEYSTORE_STORE_PASS=mylocalpassword
           
-          # 4. Запускаем CMake ровно по инструкции из конца android_buildenv.sh
+          # 4. Конфигурируем CMake с ОТКЛЮЧЕННЫМИ тестами (-DBUILD_TESTING=OFF)
           mkdir build-android && cd build-android
           cmake \
             -DCMAKE_TOOLCHAIN_FILE="${MIXXX_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
             -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DBUILD_BENCH=OFF \
             "${MIXXX_ROOT}"
             
-          # 5. Компилируем APK
+          # 5. Собираем сам Mixxx и упаковываем в APK
           cmake --build . --target apk --parallel $(nproc)
 
-      - name: 3. Выгрузка готового APK
+      - name: 4. Выгрузка готового APK
         uses: actions/upload-artifact@v4
         with:
           name: Mixxx-Android-Signed-APK
-          path: build-android/android-build/build/outputs/apk/**/*.apk
+          path: |
+            build-android/**/*.apk
