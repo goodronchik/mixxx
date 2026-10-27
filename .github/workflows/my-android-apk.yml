@@ -6,6 +6,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-24.04
+    env:
+      MIXXX_VCPKG_ENABLE: "1"
     steps:
       - name: 1. Скачивание исходников Mixxx
         uses: actions/checkout@v4
@@ -15,8 +17,17 @@ jobs:
       - name: 2. Установка зависимостей, компиляция и подпись APK
         shell: bash
         run: |
-          # Запускаем официальный скрипт подготовки Android-окружения
+          # Передаем аргумент setup явно в окружение bash
+          set -- setup
+          
+          # 1. Скачиваем Android SDK и NDK
           source ./tools/android_buildenv.sh setup
+          
+          # 2. Скачиваем vcpkg и Qt6 для Android (если android_buildenv этого не сделал сам)
+          if [ -z "${CMAKE_TOOLCHAIN_FILE:-}" ] && [ ! -d "buildenv" ]; then
+            echo "Запускаем установку vcpkg через debian_buildenv.sh..."
+            TARGET_ARCH=arm64 TARGET_OS=android CROSS_COMPILE=1 source ./tools/debian_buildenv.sh setup || true
+          fi
           
           # Генерируем криптографический ключ для подписи APK
           keytool -genkey -noprompt \
@@ -29,14 +40,20 @@ jobs:
             -storepass mylocalpassword \
             -dname "CN=MixxxAndroid"
             
-          # Передаем параметры ключа в систему сборки Qt
           export QT_ANDROID_KEYSTORE_ALIAS=mixxx
           export QT_ANDROID_KEYSTORE_KEY_PASS=mylocalpassword
           export QT_ANDROID_KEYSTORE_PATH=$(pwd)/mixxx.keystore
           export QT_ANDROID_KEYSTORE_STORE_PASS=mylocalpassword
           
-          # Автоматически ищем путь к скачанному тулчейну vcpkg
-          VCPKG_CMAKE=$(find $(pwd)/buildenv -name "vcpkg.cmake" | head -n 1)
+          # Определяем точный путь к vcpkg.cmake (из переменной скрипта или поиском по диску)
+          if [ -n "${CMAKE_TOOLCHAIN_FILE:-}" ] && [ -f "$CMAKE_TOOLCHAIN_FILE" ]; then
+            VCPKG_CMAKE="$CMAKE_TOOLCHAIN_FILE"
+          elif [ -n "${VCPKG_ROOT:-}" ] && [ -f "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" ]; then
+            VCPKG_CMAKE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+          else
+            VCPKG_CMAKE=$(find $(pwd) /home/runner /tmp -name "vcpkg.cmake" 2>/dev/null | grep "mixxx-deps" | head -n 1)
+          fi
+          
           echo "Используем тулчейн: $VCPKG_CMAKE"
           
           # Настраиваем CMake и запускаем сборку строго цели apk
