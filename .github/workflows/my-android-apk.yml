@@ -6,30 +6,29 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-24.04
-    env:
-      MIXXX_VCPKG_ENABLE: "1"
     steps:
       - name: 1. Скачивание исходников Mixxx
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: 2. Установка зависимостей, компиляция и подпись APK
+      - name: 2. Установка окружения, скачивание vcpkg и сборка APK
         shell: bash
         run: |
-          # Передаем аргумент setup явно в окружение bash
-          set -- setup
-          
-          # 1. Скачиваем Android SDK и NDK
+          # 1. Запускаем скрипт настройки окружения (он задаст BUILDENV_URL и MIXXX_VCPKG_ROOT)
           source ./tools/android_buildenv.sh setup
           
-          # 2. Скачиваем vcpkg и Qt6 для Android (если android_buildenv этого не сделал сам)
-          if [ -z "${CMAKE_TOOLCHAIN_FILE:-}" ] && [ ! -d "buildenv" ]; then
-            echo "Запускаем установку vcpkg через debian_buildenv.sh..."
-            TARGET_ARCH=arm64 TARGET_OS=android CROSS_COMPILE=1 source ./tools/debian_buildenv.sh setup || true
+          # 2. Скачиваем и распаковываем готовый архив зависимостей Mixxx (Qt6 + vcpkg для Android)
+          if [ ! -d "${MIXXX_VCPKG_ROOT}" ]; then
+            echo "Скачиваем зависимости из: ${BUILDENV_URL}"
+            mkdir -p "${BUILDENV_BASEPATH}"
+            curl -L --fail "${BUILDENV_URL}" -o "${BUILDENV_BASEPATH}/deps.zip"
+            echo "${BUILDENV_SHA256}  ${BUILDENV_BASEPATH}/deps.zip" | sha256sum -c -
+            unzip -q "${BUILDENV_BASEPATH}/deps.zip" -d "${BUILDENV_BASEPATH}"
+            rm "${BUILDENV_BASEPATH}/deps.zip"
           fi
           
-          # Генерируем криптографический ключ для подписи APK
+          # 3. Генерируем ключ для подписи APK
           keytool -genkey -noprompt \
             -keystore mixxx.keystore \
             -alias mixxx \
@@ -45,26 +44,17 @@ jobs:
           export QT_ANDROID_KEYSTORE_PATH=$(pwd)/mixxx.keystore
           export QT_ANDROID_KEYSTORE_STORE_PASS=mylocalpassword
           
-          # Определяем точный путь к vcpkg.cmake (из переменной скрипта или поиском по диску)
-          if [ -n "${CMAKE_TOOLCHAIN_FILE:-}" ] && [ -f "$CMAKE_TOOLCHAIN_FILE" ]; then
-            VCPKG_CMAKE="$CMAKE_TOOLCHAIN_FILE"
-          elif [ -n "${VCPKG_ROOT:-}" ] && [ -f "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" ]; then
-            VCPKG_CMAKE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-          else
-            VCPKG_CMAKE=$(find $(pwd) /home/runner /tmp -name "vcpkg.cmake" 2>/dev/null | grep "mixxx-deps" | head -n 1)
-          fi
-          
-          echo "Используем тулчейн: $VCPKG_CMAKE"
-          
-          # Настраиваем CMake и запускаем сборку строго цели apk
+          # 4. Запускаем CMake ровно по инструкции из конца android_buildenv.sh
           mkdir build-android && cd build-android
           cmake \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_CMAKE" \
+            -DCMAKE_TOOLCHAIN_FILE="${MIXXX_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
             -DCMAKE_SYSTEM_NAME=Android \
-            ..
+            "${MIXXX_ROOT}"
+            
+          # 5. Компилируем APK
           cmake --build . --target apk --parallel $(nproc)
 
-      - name: 3. Сохранение готового APK
+      - name: 3. Выгрузка готового APK
         uses: actions/upload-artifact@v4
         with:
           name: Mixxx-Android-Signed-APK
